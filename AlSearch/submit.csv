@@ -1,0 +1,23 @@
+#!/bin/csh
+module load R
+if ($#argv != 2) then
+        echo "Usage: You need to feed two arguments to this program which is"
+        echo "the number of years and the number of models. For example,"
+        echo "./R_loops.csh 2 2"
+        exit 1
+endif
+
+# Specify the number of batch number
+set numSearch = $1
+set search = 1
+set numBatch = $2
+while ($search <= $numSearch)
+    set batch = 1
+    while ($batch <= $numBatch)
+        echo "Submit job batch = $batch, search = $search"
+        bsub -n 1 -W 1800 -q stat -oo out.batch=$batch -eo err.batch=$batch "/usr/local/usrapps/bjreich/hyang23/smoke/bin/Rscript smallA_search.R $search $batch"
+        @ batch++
+    end
+    @ search++
+end 
+

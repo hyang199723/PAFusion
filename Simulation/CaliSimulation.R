@@ -1,0 +1,238 @@
+rm(list  = ls())
+setwd("/Users/hongjianyang/Desktop/PaperCode/Simulation/")
+#### simulation of the time series process
+library(tidyverse)
+library(spBayes)
+library(ggplot2)
+library(mgcv)
+library(MASS)
+library(mvtnorm)
+library(truncnorm)
+library(viridis)
+
+fft_real <- function(dat,inverse=FALSE){
+  if(!inverse){
+    x  <- dat
+    n  <- length(x)
+    n2 <- floor(n/2)
+    y  <- fft(x,inverse=FALSE)
+    if(n%%2==0){
+      X1     <- Re(y)[1:(n2+1)]
+      X2     <- Im(y)[2:(n2)]
+    }
+    if(n%%2!=0){
+      X1     <- Re(y)[1:(n2+1)]
+      X2     <- Im(y)[2:(n2+1)]
+    }
+    out <- c(X1,X2)
+  }
+  if(inverse){
+    X  <- dat
+    n  <- length(X)
+    n2 <- floor(n/2)
+    if(n%%2==0){
+      Y1    <- c(X[1:(n2+1)],X[n2:2])
+      Y2    <- c(0,X[(n2+2):n],0,-X[n:(n2+2)])
+    }
+    if(n%%2!=0){
+      Y1    <- c(X[1:(n2+1)],X[(n2+1):2])
+      Y2    <- c(0,X[(n2+2):n],-X[n:(n2+2)])
+    }
+    y   <- complex(n, real = Y1, imaginary = Y2)
+    out <- Re(fft(y/n,inverse=TRUE))
+  }
+  return(out)}
+
+
+# correlation function
+exp_corr=function(d,range)
+{
+  out=exp(-d/range)
+  return(out)
+}
+
+# Constant correlation across all frequencies.
+# Get strong correlation first.
+
+###### set some parameters ########
+set.seed(123)
+a1 = 80
+a2 = 500
+n=c(a1,a2) # number of locations
+
+nt=30 # total time steps
+ntot=nt*(a1+a2)
+
+tau1=4^2 / 10 # error variance1
+tau2=6^2 / 10  # error variance2
+set.seed(99)
+# Change al from uniform sequence to decreasing sequence
+# from 10 - 1 / 10
+al = seq(from = 2, to = 2, length = nt) / 10 # /10: 20% - 80%;  /3: 40% - 98%; /25: 5% - 47%
+
+# correlation parameters
+set.seed(88)
+sigmau=seq(from=50,to=10,length=nt)+rtruncnorm(nt,a=0,sd=.2)
+set.seed(564)
+sigmav=seq(from=40,to=10,length=nt)+rtruncnorm(nt,a=0,sd=.2)
+# same range for all freq
+rangeu=2
+rangev=4
+
+###### simulate coordinates #######
+
+set.seed(1)
+leng = 15
+coords1 = cbind(runif(n[1],0,leng), runif(n[1],0,leng))
+set.seed(28)
+coords2 = cbind(runif(n[2],0,leng), runif(n[2],0,leng))
+coords=rbind(coords1,coords2)
+
+## Mean: create covariates
+p = 6
+X=array(NA,dim=c(a1+a2, nt, p))
+X[,,1]=matrix(rep(1,ntot),ncol = nt)
+X[,,2]=matrix(rnorm(ntot,mean=1,sd=sqrt(80)),ncol = nt)
+X[,,3]=matrix(rnorm(ntot,mean=2,sd=sqrt(40)),ncol = nt)
+X[,,4]=matrix(rbinom(ntot,size=1,prob=.2),ncol = nt)
+X[,,5]=matrix(rbinom(ntot,size=1,prob=.15),ncol = nt)
+X[,,6]=matrix(rbinom(ntot,size=1,prob=.1),ncol = nt)
+
+# Conditions of X
+X[,,4] = ifelse((X[,,4] == 1) & (X[,,5] == 1), 0, X[,,4])
+X[,,5] = ifelse((X[,,5] == 1) & (X[,,6] == 1), 0, X[,,5])
+
+# Take DFT of X
+X_star = array(NA,dim=c(a1+a2,nt,6))
+for (i in 1:(a1+a2)){
+  for (j in 1:p) {
+    X_star[i, , j] = fft_real(X[i, , j])
+  }
+}
+
+X1_star = X_star[1:a1,,]
+X2_star = X_star[(a1+1):(a1+a2),,1:3]
+
+betau = c(2, 0.118, 0.064, 0.007, 0.022, 0.049)
+betav = c(1, -0.002, 0.012)
+
+# X_star * beta
+Xu_star = array(NA,dim=c(a1+a2,nt,6))
+Xv_star = array(NA,dim=c(a2,nt,3))
+
+for (i in 1:6) {
+  Xu_star[,,i]=X_star[,,i]*betau[i]
+}
+for (i in 1:3) {
+  Xv_star[,,i]=X2_star[,,i]*betav[i]
+}
+
+######## Get U and V ##########
+
+du12=as.matrix(dist(coords)) #distance matrix U
+
+u=matrix(NA,ncol=nt,nrow=sum(n))
+u1=matrix(NA,ncol=nt,nrow=n[1])
+u2=matrix(NA,ncol=nt,nrow=n[2])
+v2=matrix(NA,ncol=nt,nrow=n[2])
+dv2=as.matrix(dist(coords2)) # distance matrix v
+
+M=exp_corr(du12, range=rangeu)
+Sigmav22=exp_corr(dv2, range = rangev)
+for (t in 1:nt) {
+  #u
+  u[,t]=t(chol(M))%*%rnorm(sum(n), 0 ,sqrt(sigmau[t])) + apply(Xu_star[,t,], 1, sum)
+  u1[,t]=u[(1:a1), t]
+  u2[,t]=u[(n[1]+1):(sum(n)),t]
+  #v
+  v2[,t]=t(chol(Sigmav22))%*%
+    rnorm(n[2], 0, sqrt(sigmav[t])) + apply(Xv_star[,t,], 1, sum)
+}
+
+####### simulate response Y ############
+
+#spectral
+Z1sp=matrix(NA,ncol=nt,nrow=n[1])
+Z2sp=matrix(NA,ncol=nt,nrow=n[2])
+
+for (t in 1:nt) {
+  Z1sp[,t]=u1[,t] #+ rnorm(n[1],0,sqrt(nt/2*tau1))
+  Z2sp[,t]=al[t]*u2[,t]+v2[,t] #+ rnorm(n[2],0,sqrt(nt/2*tau2))
+}
+
+#time domain
+Y1 = matrix(NA, ncol=nt, nrow=n[1])
+Y2 = matrix(NA, ncol=nt, nrow=n[2])
+for(i in 1:n[1]){Y1[i,] <- fft_real(Z1sp[i,],inverse=TRUE) + rnorm(nt,0,sqrt(tau1))} 
+for(i in 1:n[2]){Y2[i,] <- fft_real(Z2sp[i,],inverse=TRUE) + rnorm(nt,0,sqrt(tau2))}
+
+
+cor = al*sigmau/sqrt((sigmau + tau1) * (al*al*sigmau + sigmav + tau2)) 
+plot(x = 1:nt, y = cor, main = "correlation in spectral domain")
+# Look at spatial correlation
+plot(M[1, ], main = "spatial correlation, site 1")
+
+## Variance by time
+v1 = rep(0, nt)
+Y = rbind(Y1, Y2)
+for (i in 1:nt) {
+  v1[i] = var(Y[, i])
+}
+plot(v1, main = "Variance of LMC generated data")
+
+X1 = X[(1:a1), , ]
+X1beta = array(NA, dim = c(a1, nt, p))
+mean1 = array(NA, dim = c(a1, nt))
+corr = rep(0, nt)
+for (i in 1:p) {
+  X1beta[,,i] = X1[,,i] * betau[i]
+}
+for (i in 1:nt) {
+  mean1[, i] = apply(X1beta[,i,], 1, sum)
+  corr[i] = cor(mean1[, i], Y1[, i])
+}
+# Do least square on Y1 ~ X1beta and get beta
+
+plot(corr, main = "Variance explained by the regression terms, type 1")
+
+
+# R^2 ~ 0.4
+
+# Save file
+save(list = c("Y1", "Y2", "X", "coords1", "coords2"), file = "comparison.RData")
+
+## Some plots
+samplePlots = F
+if (samplePlots) {
+  valuesY=c(as.vector(Y1),Y1=as.vector(Y2))
+  type=c(rep('Type1',length(Y1)),rep('Type2',length(Y2)))
+  xcord=c(rep(coords1[,1],nt),rep(coords2[,1],nt))
+  ycord=c(rep(coords1[,2],nt),rep(coords2[,2],nt))
+  times=c(rep(seq(1,nt),each=a1),rep(seq(1,nt),each=a2))
+  
+  df=data.frame(valuesY,type,xcord,ycord,times)
+  
+  
+  ggplot(df %>% filter(times==1))+geom_point(aes(x=xcord,y=ycord,col=valuesY))+
+    theme_bw()+facet_grid(~type)
+  
+  ggplot(df %>% filter(times==4))+geom_point(aes(x=xcord,y=ycord,col=valuesY))+
+    theme_bw()+facet_grid(~type)
+  
+}
+
+
+# ##############################################:
+# ####     Transform to spatial land       #####:
+# ##############################################:
+# 
+# for(i in 1:n1){Z1[i,] <- fft_real(U1[i,],inverse=TRUE)}
+# for(i in 1:n2){Z2[i,] <- fft_real(A*U2[i,]+V2[i,],inverse=TRUE)}
+# 
+# ##############################################:
+# ####  IMPUTE MISSING DATA (real space)   #####:
+# ##############################################:
+# 
+# Y1[m1] <- rnorm(sum(m1),beta1+Z1[m1],sqrt(taue1)) 
+# Y2[m2] <- rnorm(sum(m2),beta2+Z2[m2],sqrt(taue2))
+
